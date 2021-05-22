@@ -70,47 +70,73 @@ def protected():
 @app.route('/lk', methods=['GET','POST', 'PUT', 'DELETE']) #личный кабинет
 @jwt_required()
 def lk():
-    current_user = get_jwt_identity()
+    current_user = str(get_jwt_identity())
     print (current_user)
     if request.method =='POST':
     #генератор ссылок
-        adress=request.get_json('полная ссылка')
-        a=hashlib.md5(adress.encode()).hexdigest()[:10]
-        access=request.get_json('доступ')
+        adress=request.json.get("full_link")
+        user_adress=str(request.json.get("user_link"))
+        access=str(request.json.get("access"))
+        if access == "": access = "public"
         if access not in accesses:
-            return jsonify({'msg':'невозможно установить такой тип доступа'}), 400
-        #username=request.get_json('логин')
+            return jsonify("невозможно установить такой тип доступа")
+        if user_adress=="": user_adress=hashlib.md5(adress.encode()).hexdigest()[:10]
+        if adress=="": return jsonify("не указана ссылка")
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
-            cursor.execute('''INSERT INTO links (long_link, short_link, access) VALUES (?, ?, ?)''',adress,a,access)
+            link_in_base=cursor.execute('''SELECT id from links WHERE long_link=?''',(adress,)).fetchall()
+            if len(link_in_base)!=0:
+                link_for_user=cursor.execute('''SELECT long_link FROM links
+        JOIN user_link ON links.id=link_id
+        JOIN users ON users.id=user_id
+        WHERE login=? AND long_link=?''', (current_user,adress,)).fetchall()
+                user_links=[]
+                for i in link_for_user:
+                    user_links.append(i[0])
+                if adress in user_links:
+                    return jsonify("для вас уже есть такая ссылка")
+                access_in_base = cursor.execute('''SELECT access from links WHERE long_link=?''', (adress,)).fetchall()[0][0]
+                if access_in_base==access:
+                    cursor.execute('''INSERT INTO user_link (link_id, user_id) VALUES (
+                                (SELECT id from links WHERE long_link=?), 
+                                (SELECT id FROM users WHERE login=?))''', (adress, current_user,))
+                    connect.commit()
+                    return jsonify("ссылка добавлена")
+            cursor.execute('''INSERT INTO links (long_link, short_link, access) VALUES (?, ?, ?)''',
+                           (adress, user_adress, access,))
             connect.commit()
             cursor.execute('''INSERT INTO user_link (link_id, user_id) VALUES (
-            (SELECT id from links WHERE long_link=?), 
-            (SELECT id FROM users WHERE login=?))''', adress, current_user)
+                        (SELECT id from links WHERE long_link=?), 
+                        (SELECT id FROM users WHERE login=?))''', (adress, current_user,))
+            connect.commit()
+            return jsonify("ссылка добавлена")
+
         except sqlite3.Error:
             print('ошибка подключения к базе при создании ссылки')
         finally:
             connect.close()
     elif request.method=='PUT':#редактирование
-        edit_link=request.get_json('полная ссылка')
-        new_short=request.get_json('псевдоним')
-        new_access=request.get_json('доступ')
+        edit_link = str(request.json.get("full_link"))
+        new_short = str(request.json.get("user_link"))
+        new_access = str(request.json.get("access"))
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
             id_link = cursor.execute('''SELECT id from links
                     JOIN user_link ON links.id=link_id
-                    JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', edit_link, current_user).fetchall()[0]
-            id_user = cursor.execute('''SELECT id FROM users WHERE login=?''', current_user).fetchall()[0]
-            if new_short!='':
+                    JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', (edit_link, current_user,)).fetchall()
+            if len(id_link)==0: return jsonify("Такой ссылки в базе нет")
+            id_link=id_link[0][0]
+            id_user = cursor.execute('''SELECT id FROM users WHERE login=?''', (current_user,)).fetchall()[0][0]
+            if new_short!="":
                 cursor.execute('''UPDATE links
     SET short_link=?
     WHERE links.id=
     (SELECT links.id FROM links
     JOIN user_link ON links.id=link_id
     JOIN users ON users.id=user_id
-    WHERE users.login=? AND links.long_link=?)''', new_short, id_user, id_link)
+    WHERE users.login=? AND links.long_link=?)''', (new_short, id_user, id_link,))
                 connect.commit()
             if new_access!="":
                 cursor.execute('''UPDATE links
@@ -119,38 +145,40 @@ def lk():
     (SELECT links.id FROM links
     JOIN user_link ON links.id=link_id
     JOIN users ON users.id=user_id
-    WHERE users.login=? AND links.long_link=?)''', new_access, id_user, id_link)
+    WHERE users.login=? AND links.long_link=?)''', (new_access, id_user, id_link,))
                 connect.commit()
+            return jsonify("Ссылка отредактирована")
 
         except sqlite3.Error:
             print('ошибка подключения к базе при редактировании')
         finally:
             connect.close()
     elif request.method=='DELETE':#удаление
-        del_link = request.get_json('полная ссылка')
+        del_link = str(request.json.get("full_link"))
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
             info=cursor.execute('''SELECT long_link FROM links
         JOIN user_link ON links.id=link_id
         JOIN users ON users.id=user_id
-        WHERE login=?''', current_user).fetchall()
+        WHERE login=?''', (current_user,)).fetchall()
             links=[]
             for i in info:
                 links.append(i[0])
             if del_link in links:
                 id_link=cursor.execute('''SELECT id from links
         JOIN user_link ON links.id=link_id
-        JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', del_link, current_user).fetchall()[0]
-                id_user=cursor.execute('''SELECT id FROM users WHERE login=?''', current_user).fetchall()[0]
+        JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', (del_link, current_user,)).fetchall()[0]
+                id_user=cursor.execute('''SELECT id FROM users WHERE login=?''', (current_user,)).fetchall()[0]
                 cursor.execute(''' DELETE FROM user_link
        WHERE user_id=?
-       AND link_id=?''', id_user, id_link)
+       AND link_id=?''', (id_user, id_link,))
                 connect.commit()
                 cursor.execute('''DELETE FROM links WHERE id=?''', id_link)
                 connect.commit()
+                return jsonify("ссылка удалена")
             else:
-                return jsonify({'msg':'невозможно удалить, нет такой ссылки'}), 404
+                return jsonify("невозможно удалить, нет такой ссылки")
         except sqlite3.Error:
             print('ошибка подключения к базе при удалении')
         finally:
@@ -159,15 +187,21 @@ def lk():
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
-            info = cursor.execute('''SELECT long_link FROM links
+            info = cursor.execute('''SELECT long_link, short_link FROM links
         JOIN user_link ON links.id=link_id
         JOIN users ON users.id=user_id
-        WHERE login=?''', current_user).fetchall()
+        WHERE login=?''', (current_user,)).fetchall()
+            result=dict()
+            for i in info:
+                result[f'{i[0]}']=f'{i[1]}'
+            return jsonify(result)
         except sqlite3.Error:
             print('ошибка подключения к базе при чтении')
         finally:
             connect.close()
-    else: print ('error')
+    else:
+        print ('error')
+        return jsonify('я такого метода не знаю')
 
 link='https://www.google.ru/'
 @app.route('/redirect', methods=['GET'])
