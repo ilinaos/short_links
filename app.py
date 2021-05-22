@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, make_response, jsonify
+from flask import Flask, request, redirect, jsonify
 from flask_jwt_extended import create_access_token, JWTManager, get_jwt_identity, jwt_required
 import sqlite3, uuid, hashlib
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -121,35 +121,40 @@ def lk():
         new_short = str(request.json.get("user_link"))
         generate=str(request.json.get("generate"))
         new_access = str(request.json.get("access"))
+        flag=False
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
-            id_link = cursor.execute('''SELECT id from links
+            id_link = cursor.execute('''SELECT links.id from links
                     JOIN user_link ON links.id=link_id
                     JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', (edit_link, current_user,)).fetchall()
             if len(id_link)==0: return jsonify("Такой ссылки в базе нет")
-            id_link=id_link[0][0]
-            id_user = cursor.execute('''SELECT id FROM users WHERE login=?''', (current_user,)).fetchall()[0][0]
+            # id_link=int(id_link[0][0])
+            # id_user = cursor.execute('''SELECT id FROM users WHERE login=?''', (current_user,)).fetchall()[0][0]
             if generate=="True": new_short=hashlib.md5(edit_link.encode()).hexdigest()[:10]
-            if new_short!="":
-                cursor.execute('''UPDATE links
-    SET short_link=?
-    WHERE links.id=
-    (SELECT links.id FROM links
-    JOIN user_link ON links.id=link_id
-    JOIN users ON users.id=user_id
-    WHERE users.login=? AND links.long_link=?)''', (new_short, id_user, id_link,))
-                connect.commit()
-            if new_access!="":
+            if new_short=="" and generate!="True": return jsonify('надо ввести короткий адресс')
+            cursor.execute('''UPDATE links
+                    SET short_link=?
+                    WHERE links.id=
+                    (SELECT links.id FROM links
+                    JOIN user_link ON links.id=link_id
+                    JOIN users ON users.id=user_id
+                    WHERE users.login=? AND links.long_link=?)''', (new_short, current_user, edit_link,))
+            connect.commit()
+            flag=True
+            if new_access!="" and new_access in accesses:
                 cursor.execute('''UPDATE links
     SET access=?
     WHERE links.id=
     (SELECT links.id FROM links
     JOIN user_link ON links.id=link_id
     JOIN users ON users.id=user_id
-    WHERE users.login=? AND links.long_link=?)''', (new_access, id_user, id_link,))
+    WHERE users.login=? AND links.long_link=?)''', (new_access, current_user, edit_link,))
                 connect.commit()
-            return jsonify("Ссылка отредактирована")
+                flag=True
+            if flag==True:
+                return jsonify("Ссылка отредактирована")
+            return jsonify('почему-то не отредактировали')
 
         except sqlite3.Error:
             print('ошибка подключения к базе при редактировании')
