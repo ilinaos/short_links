@@ -1,6 +1,6 @@
 from flask import Flask, request, redirect, jsonify
 from flask_jwt_extended import create_access_token, JWTManager, get_jwt_identity, jwt_required
-import sqlite3, uuid, hashlib
+import sqlite3, uuid, hashlib, random
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -80,7 +80,7 @@ def lk():
         if access == "": access = "public"
         if access not in accesses:
             return jsonify("невозможно установить такой тип доступа")
-        if user_adress=="": user_adress=hashlib.md5(adress.encode()).hexdigest()[:10]
+        if user_adress=="": user_adress=hashlib.md5(adress.encode()).hexdigest()[:random.randint(8,12)]
         if adress=="": return jsonify("не указана ссылка")
         try:
             connect = sqlite3.connect('data.db')
@@ -102,7 +102,7 @@ def lk():
                                 (SELECT id from links WHERE long_link=?), 
                                 (SELECT id FROM users WHERE login=?))''', (adress, current_user,))
                     connect.commit()
-                    return jsonify("ссылка добавлена")
+                    return jsonify(f"ссылка добавлена: {user_adress}")
             cursor.execute('''INSERT INTO links (long_link, short_link, access) VALUES (?, ?, ?)''',
                            (adress, user_adress, access,))
             connect.commit()
@@ -110,7 +110,7 @@ def lk():
                         (SELECT id from links WHERE long_link=?), 
                         (SELECT id FROM users WHERE login=?))''', (adress, current_user,))
             connect.commit()
-            return jsonify("ссылка добавлена")
+            return jsonify(f"ссылка добавлена: {user_adress}")
 
         except sqlite3.Error:
             print('ошибка подключения к базе при создании ссылки')
@@ -131,7 +131,7 @@ def lk():
             if len(id_link)==0: return jsonify("Такой ссылки в базе нет")
             # id_link=int(id_link[0][0])
             # id_user = cursor.execute('''SELECT id FROM users WHERE login=?''', (current_user,)).fetchall()[0][0]
-            if generate=="True": new_short=hashlib.md5(edit_link.encode()).hexdigest()[:10]
+            if generate=="True": new_short=hashlib.md5(edit_link.encode()).hexdigest()[:random.randint(8,12)]
             if new_short=="" and generate!="True": return jsonify('надо ввести короткий адресс')
             cursor.execute('''UPDATE links
                     SET short_link=?
