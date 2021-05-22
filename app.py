@@ -1,7 +1,14 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, redirect, make_response, jsonify
+from flask_jwt_extended import create_access_token, JWTManager, get_jwt_identity, jwt_required
 import sqlite3, uuid, hashlib
 from werkzeug.security import generate_password_hash, check_password_hash
+
 app = Flask(__name__)
+app.config["JWT_SECRET_KEY"] = "super-secret"  # Change this!
+jwt = JWTManager(app)
+
+accesses=['public', 'general', 'private']
+
 
 @app.route('/', methods=['POST'])
 def hello_world():
@@ -9,19 +16,21 @@ def hello_world():
 
 @app.route('/registration', methods=['POST'])
 def register():
-    login=request.get_json('логин')
-    password = request.get_json('пароль')
-    salt_generation = uuid.uuid4().hex
-    hash_passworda = generate_password_hash(password + salt_generation)
-    username='test'
+    username=str(request.json.get("login", None))
+    password = str(request.json.get("password", None))
+    salt_generation = str(uuid.uuid4().hex)
+    hash_password = str(generate_password_hash(password + salt_generation))
     try:
         connect = sqlite3.connect('data.db')
         cursor = connect.cursor()
-        cursor.execute(''' INSERT
-    INTO
-    users(login, password, salt)
-    VALUES(?, ?, ?)''', username,hash_passworda,salt_generation)
-        connect.commit()
+        user=cursor.execute('''SELECT login FROM users WHERE login=?''',(username,)).fetchall()
+        if len(user)!=0:
+            return jsonify("Такой пользователь уже есть")
+        else:
+            cursor.execute('''INSERT INTO users (login, password, salt)
+                    VALUES (?, ?, ?)''', (username, hash_password, salt_generation,))
+            connect.commit()
+            return jsonify("Пользователь зарегистирован")
     except sqlite3.Error:
         print('не удалось зарегистрироваться')
     finally:
@@ -29,28 +38,48 @@ def register():
 
 @app.route('/auth', methods=['GET'])
 def auth():
-    username = 'test'
+    username = str(request.json.get("login", None))
+    password = str(request.json.get("password", None))
     try:
         connect = sqlite3.connect('data.db')
         cursor = connect.cursor()
-        hash='test' #то, что ввел пользователь
-        password = cursor.execute('''SELECT password FROM users WHERE login=?''', username).fetchall()[0]
-        print(password)
-        salt_in_base =cursor.execute('''SELECT salt FROM users WHERE login=?''', username).fetchall()[0]
-        check_password_hash(hash, password + salt_in_base)
+        user = cursor.execute('''SELECT login FROM users WHERE login=?''', (username,)).fetchall()
+        hash = cursor.execute('''SELECT password FROM users WHERE login=?''', (username,)).fetchall()
+        if len(hash)!=0: hash=hash[0][0]
+        salt_in_base = cursor.execute('''SELECT salt FROM users WHERE login=?''', (username,)).fetchall()
+        if len(salt_in_base)!=0: salt_in_base=salt_in_base[0][0]
+        #если пользователя с таким именем в базе нет
+        #или пароль юзера из базы не совпадает с введенным
+        if len(user)==0 or check_password_hash(hash, password + salt_in_base)==False:
+            return jsonify("Bad username or password")
+        access_token = create_access_token(identity=username)
+        return jsonify(access_token=access_token)
     except sqlite3.Error:
         print('не удалось авторизоваться')
     finally:
         connect.close()
 
-@app.route('/lk/<username>/links', methods=['GET','POST', 'PUT', 'DELETE']) #личный кабинет
-def new_link(): #генерация ссылок
+@app.route("/protected", methods=["GET"])
+@jwt_required()
+def protected():
+    # Access the identity of the current user with get_jwt_identity
+    current_user = get_jwt_identity()
+    print(current_user)
+    return jsonify(logged_in_as=current_user), 200
+
+@app.route('/lk', methods=['GET','POST', 'PUT', 'DELETE']) #личный кабинет
+@jwt_required()
+def lk():
+    current_user = get_jwt_identity()
+    print (current_user)
     if request.method =='POST':
     #генератор ссылок
-        adress='vk.com'
+        adress=request.get_json('полная ссылка')
         a=hashlib.md5(adress.encode()).hexdigest()[:10]
-        access='public'
-        username='test'
+        access=request.get_json('доступ')
+        if access not in accesses:
+            return jsonify({'msg':'невозможно установить такой тип доступа'}), 400
+        #username=request.get_json('логин')
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
@@ -58,58 +87,92 @@ def new_link(): #генерация ссылок
             connect.commit()
             cursor.execute('''INSERT INTO user_link (link_id, user_id) VALUES (
             (SELECT id from links WHERE long_link=?), 
-            (SELECT id FROM users WHERE login=?))''', adress, username)
+            (SELECT id FROM users WHERE login=?))''', adress, current_user)
         except sqlite3.Error:
             print('ошибка подключения к базе при создании ссылки')
         finally:
             connect.close()
+    elif request.method=='PUT':#редактирование
+        edit_link=request.get_json('полная ссылка')
+        new_short=request.get_json('псевдоним')
+        new_access=request.get_json('доступ')
+        try:
+            connect = sqlite3.connect('data.db')
+            cursor = connect.cursor()
+            id_link = cursor.execute('''SELECT id from links
+                    JOIN user_link ON links.id=link_id
+                    JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', edit_link, current_user).fetchall()[0]
+            id_user = cursor.execute('''SELECT id FROM users WHERE login=?''', current_user).fetchall()[0]
+            if new_short!='':
+                cursor.execute('''UPDATE links
+    SET short_link=?
+    WHERE links.id=
+    (SELECT links.id FROM links
+    JOIN user_link ON links.id=link_id
+    JOIN users ON users.id=user_id
+    WHERE users.login=? AND links.long_link=?)''', new_short, id_user, id_link)
+                connect.commit()
+            if new_access!="":
+                cursor.execute('''UPDATE links
+    SET access=?
+    WHERE links.id=
+    (SELECT links.id FROM links
+    JOIN user_link ON links.id=link_id
+    JOIN users ON users.id=user_id
+    WHERE users.login=? AND links.long_link=?)''', new_access, id_user, id_link)
+                connect.commit()
 
-
-def read_link(): #просмотр ссылок
-    if request.method=='GET':
-        username = 'test'
+        except sqlite3.Error:
+            print('ошибка подключения к базе при редактировании')
+        finally:
+            connect.close()
+    elif request.method=='DELETE':#удаление
+        del_link = request.get_json('полная ссылка')
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
             info=cursor.execute('''SELECT long_link FROM links
-JOIN user_link ON links.id=link_id
-JOIN users ON users.id=user_id
-WHERE login=?''', username).fetchall()
-            print(info[0])
+        JOIN user_link ON links.id=link_id
+        JOIN users ON users.id=user_id
+        WHERE login=?''', current_user).fetchall()
+            links=[]
+            for i in info:
+                links.append(i[0])
+            if del_link in links:
+                id_link=cursor.execute('''SELECT id from links
+        JOIN user_link ON links.id=link_id
+        JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', del_link, current_user).fetchall()[0]
+                id_user=cursor.execute('''SELECT id FROM users WHERE login=?''', current_user).fetchall()[0]
+                cursor.execute(''' DELETE FROM user_link
+       WHERE user_id=?
+       AND link_id=?''', id_user, id_link)
+                connect.commit()
+                cursor.execute('''DELETE FROM links WHERE id=?''', id_link)
+                connect.commit()
+            else:
+                return jsonify({'msg':'невозможно удалить, нет такой ссылки'}), 404
+        except sqlite3.Error:
+            print('ошибка подключения к базе при удалении')
+        finally:
+            connect.close()
+    elif request.method=='GET': #просмотр ссылок
+        try:
+            connect = sqlite3.connect('data.db')
+            cursor = connect.cursor()
+            info = cursor.execute('''SELECT long_link FROM links
+        JOIN user_link ON links.id=link_id
+        JOIN users ON users.id=user_id
+        WHERE login=?''', current_user).fetchall()
         except sqlite3.Error:
             print('ошибка подключения к базе при чтении')
         finally:
             connect.close()
+    else: print ('error')
 
-def edit_link(): #редактирование
-    '''UPDATE links
-SET access='private'
-WHERE links.id=
-(SELECT links.id FROM links
-JOIN user_link ON links.id=link_id
-JOIN users ON users.id=user_id
-WHERE users.login='ann' AND links.long_link='google.com')'''
-
-    '''UPDATE links
-SET short_link='wowwowowo'
-WHERE links.id=
-(SELECT links.id FROM links
-JOIN user_link ON links.id=link_id
-JOIN users ON users.id=user_id
-WHERE users.login='ann' AND links.long_link='google.com')'''
-    pass
-
-def delete_link(): #удаление
-    '''удалить ссылку для пользователя
-DELETE FROM user_link
-WHERE user_id=2
-AND link_id=1
-
-DELETE FROM links
-WHERE id=1'''
-    pass
-
-
+link='https://www.google.ru/'
+@app.route('/redirect', methods=['GET'])
+def red():
+    return redirect(link)
 
 
 if __name__ == '__main__':
@@ -149,7 +212,6 @@ if __name__ == '__main__':
         words=[]
         for j in data:
             words.append(j[0])
-        accesses=['public', 'private', 'general']
         for i in accesses:
             if i not in words:
                 cursor.execute('''INSERT INTO accesses (id) VALUES (?)''',(i,))
