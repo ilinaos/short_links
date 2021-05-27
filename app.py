@@ -210,10 +210,22 @@ def lk():
         print ('error')
         return jsonify('я такого метода не знаю')
 
-link='https://www.google.ru/'
-@app.route('/redirect', methods=['GET'])
-def red():
-    return redirect(link)
+@app.route('/<short>', methods=['GET'])
+def red(short):
+    try:
+        connect = sqlite3.connect('data.db')
+        cursor = connect.cursor()
+        inf=cursor.execute('''SELECT long_link FROM links WHERE short_link=?''',(short,)).fetchall()
+        if len(inf)!=0:
+            link = inf[0][0]
+            return redirect(link)
+        else:
+            return jsonify('недоступная ссылка')
+
+    except sqlite3.Error:
+        print('ошибка подключения к базе при переходе')
+    finally:
+        connect.close()
 
 
 if __name__ == '__main__':
