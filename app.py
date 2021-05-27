@@ -10,10 +10,6 @@ jwt = JWTManager(app)
 accesses=['public', 'general', 'private']
 
 
-@app.route('/', methods=['POST'])
-def hello_world():
-    return request.json.get('login', None)
-
 @app.route('/registration', methods=['POST'])
 def register():
     username=str(request.json.get("login", None))
@@ -36,7 +32,7 @@ def register():
     finally:
         connect.close()
 
-@app.route('/auth', methods=['GET'])
+@app.route('/auth', methods=['POST'])
 def auth():
     username = str(request.json.get("login", None))
     password = str(request.json.get("password", None))
@@ -59,50 +55,34 @@ def auth():
     finally:
         connect.close()
 
-@app.route("/protected", methods=["GET"])
-@jwt_required()
-def protected():
-    # Access the identity of the current user with get_jwt_identity
-    current_user = get_jwt_identity()
-    print(current_user)
-    return jsonify(logged_in_as=current_user), 200
-
 @app.route('/lk', methods=['GET','POST', 'PUT', 'DELETE']) #личный кабинет
 @jwt_required()
 def lk():
     current_user = str(get_jwt_identity())
-    print (current_user)
     if request.method =='POST':
     #генератор ссылок
-        adress=request.json.get("full_link")
+        adress=str(request.json.get("full_link"))
         user_adress=str(request.json.get("user_link"))
         access=str(request.json.get("access"))
-        if access == "": access = "public"
-        if access not in accesses:
-            return jsonify("невозможно установить такой тип доступа")
+        if access == "" or access not in accesses: access = "private" #по умолчанию или в случае ошибки
+        #если не указан человекочитаемый псевдоним, то генерируем
         if user_adress=="": user_adress=hashlib.md5(adress.encode()).hexdigest()[:random.randint(8,12)]
         if adress=="": return jsonify("не указана ссылка")
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
-            link_in_base=cursor.execute('''SELECT id from links WHERE long_link=?''',(adress,)).fetchall()
-            if len(link_in_base)!=0:
-                link_for_user=cursor.execute('''SELECT long_link FROM links
+            #получить список ссылок этого пользователя, совпадения по логину и длинной ссылке
+            link_for_user=cursor.execute('''SELECT long_link FROM links
         JOIN user_link ON links.id=link_id
         JOIN users ON users.id=user_id
         WHERE login=? AND long_link=?''', (current_user,adress,)).fetchall()
-                user_links=[]
-                for i in link_for_user:
-                    user_links.append(i[0])
-                if adress in user_links:
-                    return jsonify("для вас уже есть такая ссылка")
-                access_in_base = cursor.execute('''SELECT access from links WHERE long_link=?''', (adress,)).fetchall()[0][0]
-                if access_in_base==access:
-                    cursor.execute('''INSERT INTO user_link (link_id, user_id) VALUES (
-                                (SELECT id from links WHERE long_link=?), 
-                                (SELECT id FROM users WHERE login=?))''', (adress, current_user,))
-                    connect.commit()
-                    return jsonify(f"ссылка добавлена: {user_adress}")
+            user_links=[]
+            for i in link_for_user:
+                user_links.append(i[0])
+            #если список не пустой
+            if adress in user_links:
+                return jsonify("для вас уже есть такая ссылка")
+            #а если пустой, то добавляем в базу ссылки
             cursor.execute('''INSERT INTO links (long_link, short_link, access) VALUES (?, ?, ?)''',
                            (adress, user_adress, access,))
             connect.commit()
@@ -110,7 +90,7 @@ def lk():
                         (SELECT id from links WHERE long_link=?), 
                         (SELECT id FROM users WHERE login=?))''', (adress, current_user,))
             connect.commit()
-            return jsonify(f"ссылка добавлена: {user_adress}")
+            return jsonify(r"ссылка добавлена: http://127.0.0.1:5000/"+f"{user_adress}")
 
         except sqlite3.Error:
             print('ошибка подключения к базе при создании ссылки')
@@ -119,42 +99,43 @@ def lk():
     elif request.method=='PUT':#редактирование
         edit_link = str(request.json.get("full_link"))
         new_short = str(request.json.get("user_link"))
+        #будем ли мы генерировать короткую ссылку случайно
         generate=str(request.json.get("generate"))
         new_access = str(request.json.get("access"))
-        flag=False
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
+            #найти, есть ли у пользователя такая ссылка
             id_link = cursor.execute('''SELECT links.id from links
                     JOIN user_link ON links.id=link_id
                     JOIN users ON users.id=user_id WHERE long_link=? AND login=?''', (edit_link, current_user,)).fetchall()
-            if len(id_link)==0: return jsonify("Такой ссылки в базе нет")
-            # id_link=int(id_link[0][0])
-            # id_user = cursor.execute('''SELECT id FROM users WHERE login=?''', (current_user,)).fetchall()[0][0]
-            if generate=="True": new_short=hashlib.md5(edit_link.encode()).hexdigest()[:random.randint(8,12)]
-            if new_short=="" and generate!="True": return jsonify('надо ввести короткий адресс')
-            cursor.execute('''UPDATE links
+            if len(id_link)==0:
+                return jsonify("Такой ссылки в базе нет")
+            else:
+                id_link=int(id_link[0][0])
+            print(id_link)
+            #если хотим изменить короткую ссылку на случайную
+            if generate=="True":
+                new_short=hashlib.md5(edit_link.encode()).hexdigest()[:random.randint(8,12)]
+            print(new_short)
+            #если в итоге короткая ссылка (новая) не пустая, т.е. пользователь ввел псевдоним или ссылка сгенерировалась случайно
+            if new_short!="":
+                cursor.execute('''UPDATE links
                     SET short_link=?
-                    WHERE links.id=
-                    (SELECT links.id FROM links
-                    JOIN user_link ON links.id=link_id
-                    JOIN users ON users.id=user_id
-                    WHERE users.login=? AND links.long_link=?)''', (new_short, current_user, edit_link,))
-            connect.commit()
-            flag=True
+                    WHERE links.id=?''', (new_short, id_link,))
+                connect.commit()
+                flag=True
+                print('сюда пришли')
+            #если пользователь указал подходящий тип доступа
             if new_access!="" and new_access in accesses:
                 cursor.execute('''UPDATE links
-    SET access=?
-    WHERE links.id=
-    (SELECT links.id FROM links
-    JOIN user_link ON links.id=link_id
-    JOIN users ON users.id=user_id
-    WHERE users.login=? AND links.long_link=?)''', (new_access, current_user, edit_link,))
+                    SET access=?
+                    WHERE links.id=?''', (new_access, id_link,))
                 connect.commit()
                 flag=True
             if flag==True:
                 return jsonify("Ссылка отредактирована")
-            return jsonify('почему-то не отредактировали')
+            return jsonify("Не отредактировали ссылку, скорей всего вы не выбрали что будем менять")
 
         except sqlite3.Error:
             print('ошибка подключения к базе при редактировании')
@@ -165,10 +146,12 @@ def lk():
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
+            #получить все ссылки пользователя
             info=cursor.execute('''SELECT long_link FROM links
         JOIN user_link ON links.id=link_id
         JOIN users ON users.id=user_id
         WHERE login=?''', (current_user,)).fetchall()
+            #сформировать из них список
             links=[]
             for i in info:
                 links.append(i[0])
@@ -198,16 +181,18 @@ def lk():
         JOIN user_link ON links.id=link_id
         JOIN users ON users.id=user_id
         WHERE login=?''', (current_user,)).fetchall()
-            result=dict()
-            for i in info:
-                result[f'{i[0]}']=f'{i[1]}'
-            return jsonify(result)
+            if len(info)!=0:
+                result=dict()
+                for i in info:
+                    result[f'{i[0]}']=f'{i[1]}'
+                return jsonify(result)
+            else:
+                return jsonify('У вас пока нет ссылок')
         except sqlite3.Error:
             print('ошибка подключения к базе при чтении')
         finally:
             connect.close()
     else:
-        print ('error')
         return jsonify('я такого метода не знаю')
 
 @app.route('/<short>', methods=['GET'])
