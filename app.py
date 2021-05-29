@@ -28,7 +28,7 @@ def register():
             connect.commit()
             return jsonify("Пользователь зарегистирован")
     except sqlite3.Error:
-        print('не удалось зарегистрироваться')
+        return jsonify('не удалось зарегистрироваться')
     finally:
         connect.close()
 
@@ -51,7 +51,7 @@ def auth():
         access_token = create_access_token(identity=username)
         return jsonify(access_token=access_token)
     except sqlite3.Error:
-        print('не удалось авторизоваться')
+        return jsonify('не удалось авторизоваться')
     finally:
         connect.close()
 
@@ -100,7 +100,7 @@ def lk():
             return jsonify(r"ссылка добавлена: http://127.0.0.1:5000/"+f"{user_adress}")
 
         except sqlite3.Error:
-            print('ошибка подключения к базе при создании ссылки')
+            return jsonify('ошибка подключения к базе при создании ссылки')
         finally:
             connect.close()
     elif request.method=='PUT':#редактирование
@@ -138,7 +138,6 @@ def lk():
                     WHERE links.id=?''', (new_short, id_link,))
                 connect.commit()
                 flag=True
-                print('сюда пришли')
             #если пользователь указал подходящий тип доступа
             if new_access!="" and new_access in accesses:
                 cursor.execute('''UPDATE links
@@ -151,7 +150,7 @@ def lk():
             return jsonify("Не отредактировали ссылку, скорей всего вы не выбрали что будем менять")
 
         except sqlite3.Error:
-            print('ошибка подключения к базе при редактировании')
+            return jsonify('ошибка подключения к базе при редактировании')
         finally:
             connect.close()
     elif request.method=='DELETE':#удаление
@@ -183,7 +182,7 @@ def lk():
             else:
                 return jsonify("невозможно удалить, нет такой ссылки")
         except sqlite3.Error:
-            print('ошибка подключения к базе при удалении')
+            return jsonify('ошибка подключения к базе при удалении')
         finally:
             connect.close()
     elif request.method=='GET': #просмотр ссылок
@@ -202,33 +201,67 @@ def lk():
             else:
                 return jsonify('У вас пока нет ссылок')
         except sqlite3.Error:
-            print('ошибка подключения к базе при чтении')
+            return jsonify('ошибка подключения к базе при чтении')
         finally:
             connect.close()
     else:
         return jsonify('я такого метода не знаю')
 
 @app.route('/<short>', methods=['GET'])
+@jwt_required(optional=True)
 def red(short):
     try:
         connect = sqlite3.connect('data.db')
         cursor = connect.cursor()
-        inf=cursor.execute('''SELECT long_link, count_of_redirection FROM links WHERE short_link=?''',(short,)).fetchall()
+        #получаем длинную ссылку по введенной короткой
+        inf=cursor.execute('''SELECT long_link FROM links WHERE short_link=?''',(short,)).fetchall()
+        #если такая ссылка была найдена
         if len(inf)!=0:
             link = inf[0][0]
-            count_redirect=int(inf[0][1])
-            cursor.execute('''UPDATE links
-                    SET count_of_redirection=?
-                    WHERE short_link=?''', (count_redirect+1, short,))
-            connect.commit()
-            return redirect(link)
+        #нужно проверить доступ
+        # и логин пользователя, чья это ссылка
+            access=cursor.execute('''SELECT access FROM links WHERE short_link=?''',(short,)).fetchall()[0][0]
+            user=cursor.execute('''SELECT login FROM users
+JOIN user_link ON users.id=user_id
+JOIN links ON link_id=links.id
+WHERE short_link=?''',(short,)).fetchall()[0][0]
+            current_user = str(get_jwt_identity())
+            print(current_user)
+            if access=='public' or access=='general' and current_user is not None or access=='private' and user==current_user:
+                return redirect(link)
+            elif current_user is None:
+                return jsonify('Нужно авторизоваться')
+            elif current_user!=user:
+                return jsonify('Вам эта ссылка недоступна')
         else:
-            return jsonify('недоступная ссылка')
+            return jsonify('Ссылка не существует или недоступна из-за уровня защиты')
 
     except sqlite3.Error:
         print('ошибка подключения к базе при переходе')
     finally:
         connect.close()
+
+# @app.route('/<short>', methods=['GET'])
+# def red(short):
+#     try:
+#         connect = sqlite3.connect('data.db')
+#         cursor = connect.cursor()
+#         inf=cursor.execute('''SELECT long_link, count_of_redirection FROM links WHERE short_link=?''',(short,)).fetchall()
+#         if len(inf)!=0:
+#             link = inf[0][0]
+#             count_redirect=int(inf[0][1])
+#             cursor.execute('''UPDATE links
+#                     SET count_of_redirection=?
+#                     WHERE short_link=?''', (count_redirect+1, short,))
+#             connect.commit()
+#             return redirect(link)
+#         else:
+#             return jsonify('недоступная ссылка')
+#
+#     except sqlite3.Error:
+#         return jsonify('ошибка подключения к базе при переходе')
+#     finally:
+#         connect.close()
 
 
 if __name__ == '__main__':
