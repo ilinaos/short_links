@@ -228,18 +228,18 @@ JOIN links ON link_id=links.id
 WHERE short_link=?''',(short,)).fetchall()[0][0]
             current_user = str(get_jwt_identity())
             print(current_user)
-            if access=='public' or access=='general' and current_user is not None or access=='private' and user==current_user:
+            if access=='public' or access=='general' and current_user != 'None' or access=='private' and user==current_user:
                 cursor.execute('''UPDATE links
                                     SET count_of_redirection=?
                                     WHERE short_link=?''', (count_redirect + 1, short,))
                 connect.commit()
                 return redirect(link)
             elif current_user is None:
-                return jsonify('Нужно авторизоваться')
+                return jsonify({"msg": "Нужно авторизоваться"})
             elif current_user!=user:
-                return jsonify('Вам эта ссылка недоступна')
+                return jsonify({"msg": "Вам эта ссылка недоступна"})
         else:
-            return jsonify('Ссылка не существует или недоступна из-за уровня защиты')
+            return jsonify({"msg": "Ссылка не существует или недоступна из-за уровня защиты"})
 
     except sqlite3.Error:
         print('ошибка подключения к базе при переходе')
