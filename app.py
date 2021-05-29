@@ -82,8 +82,15 @@ def lk():
             #если список не пустой
             if adress in user_links:
                 return jsonify("для вас уже есть такая ссылка")
-            #а если пустой, то добавляем в базу ссылки
-            cursor.execute('''INSERT INTO links (long_link, short_link, access) VALUES (?, ?, ?)''',
+            #а если пустой, то выбираем из базы все короткие ссылки и смотрим, чтоб не совпадали псевдонимы
+            shorts = cursor.execute('SELECT short_link from links').fetchall()
+            short_links_in_base = []
+            for i in shorts:
+                short_links_in_base.append(i[0])
+            if user_adress in short_links_in_base:
+                return jsonify('Такая короткая ссылка в базе уже есть, задайте новый псевдоним')
+            #и только после этого добавляем в базу
+            cursor.execute('''INSERT INTO links (long_link, short_link, access, count_of_redirection) VALUES (?, ?, ?, 0)''',
                            (adress, user_adress, access,))
             connect.commit()
             cursor.execute('''INSERT INTO user_link (link_id, user_id) VALUES (
@@ -113,13 +120,19 @@ def lk():
                 return jsonify("Такой ссылки в базе нет")
             else:
                 id_link=int(id_link[0][0])
-            print(id_link)
             #если хотим изменить короткую ссылку на случайную
             if generate=="True":
                 new_short=hashlib.md5(edit_link.encode()).hexdigest()[:random.randint(8,12)]
-            print(new_short)
             #если в итоге короткая ссылка (новая) не пустая, т.е. пользователь ввел псевдоним или ссылка сгенерировалась случайно
             if new_short!="":
+            #сначала проверить, чтобы она не совпадала ни с чем в базе, чтобы не возникало конфликтов
+                shorts=cursor.execute('SELECT short_link from links').fetchall()
+                short_links_in_base=[]
+                for i in shorts:
+                    short_links_in_base.append(i[0])
+                if new_short in short_links_in_base:
+                    return jsonify('Такая ссылка в базе уже есть, задайте новый псевдоним')
+            #и если таких коротких ссылок в базе нет
                 cursor.execute('''UPDATE links
                     SET short_link=?
                     WHERE links.id=?''', (new_short, id_link,))
@@ -177,14 +190,14 @@ def lk():
         try:
             connect = sqlite3.connect('data.db')
             cursor = connect.cursor()
-            info = cursor.execute('''SELECT long_link, short_link FROM links
+            info = cursor.execute('''SELECT long_link, short_link, access, count_of_redirection FROM links
         JOIN user_link ON links.id=link_id
         JOIN users ON users.id=user_id
         WHERE login=?''', (current_user,)).fetchall()
             if len(info)!=0:
                 result=dict()
                 for i in info:
-                    result[f'{i[0]}']=f'{i[1]}'
+                    result[f'{i[0]}']=f'{i[1]}, {i[2]}, переходов: {i[3]}'
                 return jsonify(result)
             else:
                 return jsonify('У вас пока нет ссылок')
@@ -200,9 +213,14 @@ def red(short):
     try:
         connect = sqlite3.connect('data.db')
         cursor = connect.cursor()
-        inf=cursor.execute('''SELECT long_link FROM links WHERE short_link=?''',(short,)).fetchall()
+        inf=cursor.execute('''SELECT long_link, count_of_redirection FROM links WHERE short_link=?''',(short,)).fetchall()
         if len(inf)!=0:
             link = inf[0][0]
+            count_redirect=int(inf[0][1])
+            cursor.execute('''UPDATE links
+                    SET count_of_redirection=?
+                    WHERE short_link=?''', (count_redirect+1, short,))
+            connect.commit()
             return redirect(link)
         else:
             return jsonify('недоступная ссылка')
@@ -231,6 +249,7 @@ if __name__ == '__main__':
 	"long_link"	TEXT NOT NULL,
 	"short_link"	TEXT NOT NULL,
 	"access"	TEXT NOT NULL,
+	"count_of_redirection"	INTEGER NOT NULL,
 	PRIMARY KEY("id" AUTOINCREMENT)
 );''')
         connect.commit()
