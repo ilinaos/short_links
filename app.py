@@ -234,7 +234,7 @@ WHERE short_link=?''',(short,)).fetchall()[0][0]
                                     WHERE short_link=?''', (count_redirect + 1, short,))
                 connect.commit()
                 return redirect(link)
-            elif current_user is None:
+            elif current_user == 'None':
                 return jsonify({"msg": "Нужно авторизоваться"})
             elif current_user!=user:
                 return jsonify({"msg": "Вам эта ссылка недоступна"})
